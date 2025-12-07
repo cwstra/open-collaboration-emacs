@@ -9,7 +9,7 @@
 ;; Version: 0.0.1
 ;; Keywords: abbrev bib c calendar comm convenience data docs emulations extensions faces files frames games hardware help hypermedia i18n internal languages lisp local maint mail matching mouse multimedia news outlines processes terminals tex tools unix vc wp
 ;; Homepage: https://github.com/cwstra/open-collaboration
-;; Package-Requires: ((emacs "24.4") (dash "2.18.0") (s "1.10.0"))
+;; Package-Requires: ((emacs "24.4") (s "1.10.0"))
 ;;
 ;; This file is not part of GNU Emacs.
 ;;
@@ -20,7 +20,6 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'dash)
 (require 'subr-x)
 (require 's)
 
@@ -35,10 +34,57 @@
 ;; Helpers
 
 (defmacro let-do (varlist &rest body)
-  (declare (debug ((&rest [&or (sexp form) (sexp "<-" form)]) body))
+  (declare (debug ((&rest [&or (sexp form) ("useh" sexp form) ("uset" sexp form) ("usefn" sexp form)]) body))
            (indent 1))
-  (let))
+  (named-let go ((varlist varlist)
+                 (body body)
+                 (acc nil))
+    (let ((first (car varlist)))
+      (cond
+       ((and (not first)
+             (not acc))
+        (cons 'progn body))
+       ((not first)
+        (progn
+          (message "returning: %s" acc)
+          (let ((result (car (seq-reduce
+                              (lambda (acc next)
+                                (list
+                                 (cond
+                                  ((eq (car next) 'let*)
+                                   (cons 'let* (cons (cadr next) acc)))
+                                  ((or (eq (car next) 'usefn) (not (consp (caddr next))))
+                                   (message "Inside: %s" (list (caddr next) (cons 'lambda (cons (list (cadr next)) acc))))
+                                   (list (caddr next) (cons 'lambda (cons (list (cadr next)) acc))))
+                                  ((eq (car next) 'uset)
+                                   (seq-concatenate 'list (caddr next) (list (cons 'lambda (cons (list (cadr next)) acc)))))
+                                  (t
+                                   (seq-concatenate 'list (list (cons 'lambda (cons (list (cadr next)) acc))) (caddr next))))))
+                              acc
+                              body))))
+            (message "result: %s" result)
+            result)))
+       ((eq 3 (seq-length first))
+        (go
+         (cdr varlist) body
+         (cons first acc)))
+       (t
+        (let* ((other-vars (cdr varlist))
+               (other-bindings
+                (seq-take-while
+                 (lambda (b) (eq 2 (seq-length b)))
+                 other-vars))
+               (next-varlist
+                (seq-drop other-vars (length other-bindings))))
+          (go
+           next-varlist body
+           (cons (list 'let* (cons first other-bindings)) acc))))))))
 
+(macroexpand
+ (let-do ((uset duckduckgo-length (test-fn "https://duckduckgo.com"))
+          (uset google-length (test-fn "https://google.com"))
+          (total-length (+ duckduckgo-length google-length)))
+   (message "Total length: %s" total-length)))
 
 ;; Logging
 (defcustom open-collaboration-log-level 'info
@@ -84,6 +130,19 @@
        (if err
            (open-collaboration--log 'error ,err-fmt err)
          ,@body))))
+
+(defun open-collaboration--fetch-json (path err-fmt return)
+  (let* ((url (string-remove-suffix "/" open-collaboration-server-url))
+         (path (string-remove-prefix "/" path))
+         (full-path (concat url "/" path)))
+    (url-retrieve
+     full-path
+     (lambda (status)
+       (let ((err (plist-get status :error)))
+         (if err
+             (open-collaboration--log 'error err-fmt err)
+           (search-forward "\n\n")
+           (funcall return (json-parse-string (buffer-substring (point) (point-max))))))))))
 
 ;; Login
 
@@ -236,7 +295,6 @@ Select action: "
             (lambda ()
               (open-collaboration--poll-for-login token room-folder))))))
     "No folder selected."))
-
 
 (defun open-collaboration-join-room ()
   "Join an existing open collaboration room"
